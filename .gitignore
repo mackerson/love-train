@@ -1,0 +1,17 @@
+# Love2D / Lua
+*.love
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Debug files
+*.log
