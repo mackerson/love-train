@@ -1,3 +1,102 @@
+-- Utility function for smooth interpolation
+function smoothstep(t)
+    -- Smooth cubic interpolation (eases in and out)
+    return t * t * (3 - 2 * t)
+end
+
+-- A* pathfinding to depot
+function findPathToDepot(start_track)
+    if not start_track then return nil end
+    
+    -- If already connected to depot, direct path
+    if start_track.connected_to_depot then
+        return {start_track}
+    end
+    
+    local open_set = {}
+    local closed_set = {}
+    local came_from = {}
+    local g_score = {}
+    local f_score = {}
+    
+    -- Initialize scores
+    for _, track in ipairs(tracks) do
+        g_score[track] = math.huge
+        f_score[track] = math.huge
+    end
+    
+    g_score[start_track] = 0
+    f_score[start_track] = heuristic(start_track, depot)
+    table.insert(open_set, start_track)
+    
+    while #open_set > 0 do
+        -- Find node with lowest f_score
+        local current = open_set[1]
+        local current_index = 1
+        for i, track in ipairs(open_set) do
+            if f_score[track] < f_score[current] then
+                current = track
+                current_index = i
+            end
+        end
+        
+        -- Remove current from open_set
+        table.remove(open_set, current_index)
+        table.insert(closed_set, current)
+        
+        -- Check if we found a depot connection
+        if current.connected_to_depot then
+            -- Reconstruct path
+            local path = {}
+            local node = current
+            while node do
+                table.insert(path, 1, node) -- Insert at beginning
+                node = came_from[node]
+            end
+            return path
+        end
+        
+        -- Check all neighbors
+        for _, neighbor in ipairs(current.connections) do
+            if not isInSet(neighbor, closed_set) then
+                local tentative_g = g_score[current] + distance(current, neighbor)
+                
+                if not isInSet(neighbor, open_set) then
+                    table.insert(open_set, neighbor)
+                elseif tentative_g >= g_score[neighbor] then
+                    goto continue -- This path is not better
+                end
+                
+                came_from[neighbor] = current
+                g_score[neighbor] = tentative_g
+                f_score[neighbor] = g_score[neighbor] + heuristic(neighbor, depot)
+                
+                ::continue::
+            end
+        end
+    end
+    
+    return nil -- No path found
+end
+
+function heuristic(track, depot_pos)
+    -- Manhattan distance to depot
+    return math.abs(track.x - depot_pos.x) + math.abs(track.y - depot_pos.y)
+end
+
+function distance(track1, track2)
+    return math.sqrt((track1.x - track2.x)^2 + (track1.y - track2.y)^2)
+end
+
+function isInSet(item, set)
+    for _, v in ipairs(set) do
+        if v == item then
+            return true
+        end
+    end
+    return false
+end
+
 function love.load()
     -- Enable console on Windows for debugging
     if love.system.getOS() == "Windows" then
@@ -7,7 +106,7 @@ function love.load()
     
     -- Game settings
     love.window.setTitle("Train Prototype")
-    love.window.setMode(0, 0, {fullscreen = false, borderless = true}) -- Windowed fullscreen
+    love.window.setMode(0, 0, {fullscreen = true}) -- True fullscreen
     love.graphics.setBackgroundColor(0.2, 0.6, 0.2) -- Green background
     
     -- World and screen dimensions
@@ -25,7 +124,10 @@ function love.load()
         y = 0,
         target_x = 0,
         target_y = 0,
-        smooth = 5 -- Camera smoothing factor
+        smooth = 5, -- Camera smoothing factor
+        zoom = 1.0, -- Current zoom level
+        min_zoom = 0.3,
+        max_zoom = 3.0
     }
     
     -- Depot position (bottom center of screen initially)
@@ -36,6 +138,12 @@ function love.load()
         height = 60
     }
     
+    -- Center camera on depot at startup
+    camera.x = depot.x - SCREEN_WIDTH / 2
+    camera.y = depot.y - SCREEN_HEIGHT / 2
+    camera.target_x = camera.x
+    camera.target_y = camera.y
+    
     -- Track system
     tracks = {}
     track_map = {} -- Hash map for fast track lookup by position
@@ -44,6 +152,7 @@ function love.load()
     trains = {}
     train_spawn_timer = 0
     TRAIN_SPAWN_INTERVAL = 3 -- seconds
+    last_depot_track_index = 0 -- For alternating depot branch selection
     
     -- Position management - track which positions are occupied
     occupied_positions = {} -- Format: [x_y] = train_id
@@ -75,6 +184,12 @@ function isPositionOccupied(x, y)
     return occupied_positions[key] ~= nil
 end
 
+function isPositionOccupiedByOther(x, y, train_id)
+    local key = getPositionKey(x, y)
+    local occupying_train = occupied_positions[key]
+    return occupying_train ~= nil and occupying_train ~= train_id
+end
+
 function occupyPosition(x, y, train_id)
     local key = getPositionKey(x, y)
     occupied_positions[key] = train_id
@@ -83,6 +198,21 @@ end
 function freePosition(x, y)
     local key = getPositionKey(x, y)
     occupied_positions[key] = nil
+end
+
+function clearTrainFromAllPositions(train_id)
+    -- Remove this train from all occupied positions
+    local positions_to_clear = {}
+    for position_key, occupying_train_id in pairs(occupied_positions) do
+        if occupying_train_id == train_id then
+            table.insert(positions_to_clear, position_key)
+        end
+    end
+    
+    for _, position_key in ipairs(positions_to_clear) do
+        occupied_positions[position_key] = nil
+        debugLog("Cleared position " .. position_key .. " previously occupied by train " .. train_id)
+    end
 end
 
 function getTrackAt(x, y)
@@ -175,8 +305,8 @@ end
 function love.update(dt)
     -- Update camera to follow mouse for now (can be changed later)
     local mouse_x, mouse_y = love.mouse.getPosition()
-    camera.target_x = (mouse_x - SCREEN_WIDTH/2) * 0.5 -- Gentle mouse following
-    camera.target_y = (mouse_y - SCREEN_HEIGHT/2) * 0.5
+    camera.target_x = (mouse_x - SCREEN_WIDTH/2) * 0.5 / camera.zoom -- Gentle mouse following adjusted for zoom
+    camera.target_y = (mouse_y - SCREEN_HEIGHT/2) * 0.5 / camera.zoom
     
     -- Clamp camera to world bounds
     camera.target_x = math.max(-WORLD_WIDTH/2 + SCREEN_WIDTH/2, math.min(WORLD_WIDTH/2 - SCREEN_WIDTH/2, camera.target_x))
@@ -196,12 +326,11 @@ function love.update(dt)
         -- Remove trains that have returned to depot
         if train.direction == -1 and 
            math.abs(train.x - depot.x) < 20 and 
-           math.abs(train.y - depot.y) < 20 then
+           math.abs(train.y - depot.y) < 20 and
+           train.current_track == nil then
             debugLog("REMOVING Train " .. train.id .. " - returned to depot")
-            -- Free position if not at depot
-            if not (train.x == depot.x and train.y == depot.y) then
-                freePosition(train.x, train.y)
-            end
+            -- Free any positions this train might still be occupying
+            clearTrainFromAllPositions(train.id)
             table.remove(trains, i)
         end
     end
@@ -211,6 +340,7 @@ function love.draw()
     -- Apply camera transform
     love.graphics.push()
     love.graphics.translate(-camera.x, -camera.y)
+    love.graphics.scale(camera.zoom, camera.zoom)
     
     -- Draw world grid (optional visual aid)
     love.graphics.setColor(0.15, 0.5, 0.15, 0.3) -- Faint green grid
@@ -240,23 +370,14 @@ function love.draw()
     -- Draw trains
     for _, train in ipairs(trains) do
         -- Train color and movement indicators
-        local move_progress = train.move_timer / 0.5
         local pulse = 0.8 + 0.2 * math.sin(love.timer.getTime() * 10)
         
         if train.direction == -1 then
-            -- Returning trains are blue
-            if move_progress > 0.8 then
-                love.graphics.setColor(0.1 * pulse, 0.1 * pulse, 0.8 * pulse) -- Pulsing blue
-            else
-                love.graphics.setColor(0.1, 0.1, 0.8) -- Blue when returning
-            end
+            -- Returning trains are blue with gentle pulsing
+            love.graphics.setColor(0.1 * pulse, 0.1 * pulse, 0.8 * pulse)
         else
-            -- Outbound trains are red
-            if move_progress > 0.8 then
-                love.graphics.setColor(0.8 * pulse, 0.1 * pulse, 0.1 * pulse) -- Pulsing red
-            else
-                love.graphics.setColor(0.8, 0.1, 0.1) -- Red when going out
-            end
+            -- Outbound trains are red with gentle pulsing
+            love.graphics.setColor(0.8 * pulse, 0.1 * pulse, 0.1 * pulse)
         end
         
         -- Draw train as a circle
@@ -299,9 +420,15 @@ function love.draw()
     -- Draw UI (not affected by camera)
     love.graphics.setColor(1, 1, 1)
     love.graphics.print("CLICK: Place/Remove tracks | SPACE: Spawn train | ESC: Quit | ↑↓: Scroll log", 10, 10)
-    love.graphics.print("Move mouse to pan camera!", 10, 30)
-    love.graphics.print("Trains: " .. #trains .. " | Tracks: " .. #tracks, 10, 50)
-    love.graphics.print("Red=outbound, Blue=returning", 10, 70)
+    love.graphics.print("Move mouse to pan camera! | Mouse wheel: Zoom", 10, 30)
+    love.graphics.print("Trains: " .. #trains .. " | Tracks: " .. #tracks .. " | Zoom: " .. string.format("%.1f", camera.zoom) .. "x", 10, 50)
+    
+    -- Count occupied positions for debugging
+    local occupied_count = 0
+    for _ in pairs(occupied_positions) do
+        occupied_count = occupied_count + 1
+    end
+    love.graphics.print("Red=outbound, Blue=returning | Occupied positions: " .. occupied_count, 10, 70)
     
     -- Draw debug log panel in lower right
     drawDebugLogPanel()
@@ -310,18 +437,18 @@ end
 function love.mousepressed(x, y, button)
     if button == 1 then -- Left click
         mouse_down = true
-        -- Convert screen coordinates to world coordinates
-        local world_x = x + camera.x
-        local world_y = y + camera.y
+        -- Convert screen coordinates to world coordinates accounting for zoom
+        local world_x = x / camera.zoom + camera.x
+        local world_y = y / camera.zoom + camera.y
         placeTrack(world_x, world_y)
     end
 end
 
 function love.mousemoved(x, y, dx, dy, istouch)
     if mouse_down then
-        -- Convert screen coordinates to world coordinates
-        local world_x = x + camera.x
-        local world_y = y + camera.y
+        -- Convert screen coordinates to world coordinates accounting for zoom
+        local world_x = x / camera.zoom + camera.x
+        local world_y = y / camera.zoom + camera.y
         placeTrack(world_x, world_y)
     end
 end
@@ -346,6 +473,30 @@ function love.keypressed(key)
     elseif key == "down" then
         scrollLog(1)
     end
+end
+
+function love.wheelmoved(x, y)
+    -- y > 0 = wheel up (zoom in), y < 0 = wheel down (zoom out)
+    local zoom_factor = 1.1
+    local old_zoom = camera.zoom
+    
+    if y > 0 then
+        camera.zoom = math.min(camera.max_zoom, camera.zoom * zoom_factor)
+    elseif y < 0 then
+        camera.zoom = math.max(camera.min_zoom, camera.zoom / zoom_factor)
+    end
+    
+    -- Get mouse position for zoom center
+    local mouse_x, mouse_y = love.mouse.getPosition()
+    local world_x = mouse_x + camera.x
+    local world_y = mouse_y + camera.y
+    
+    -- Adjust camera position to zoom toward mouse cursor
+    local zoom_ratio = camera.zoom / old_zoom
+    camera.x = world_x - (world_x - camera.x) * zoom_ratio
+    camera.y = world_y - (world_y - camera.y) * zoom_ratio
+    camera.target_x = camera.x
+    camera.target_y = camera.y
 end
 
 function scrollLog(direction)
@@ -439,12 +590,7 @@ function removeTrack(track_to_remove, track_index)
         if train.target_track == track_to_remove then
             train.target_track = nil
         end
-        -- Remove from path stack if present
-        for i = #train.path_stack, 1, -1 do
-            if train.path_stack[i] == track_to_remove then
-                table.remove(train.path_stack, i)
-            end
-        end
+        -- No additional cleanup needed with simplified pathfinding
     end
 end
 
@@ -505,9 +651,37 @@ function spawnTrain()
         return 
     end
     
+    -- Sort depot tracks clockwise by angle from depot center
+    table.sort(depot_tracks, function(a, b)
+        local angle_a = math.atan2(a.y - depot.y, a.x - depot.x)
+        local angle_b = math.atan2(b.y - depot.y, b.x - depot.x)
+        return angle_a < angle_b
+    end)
+    
     -- Spawn simple train at depot
     local train_id = math.floor(love.timer.getTime() * 100) -- Simpler ID for logging
-    local target = depot_tracks[math.random(#depot_tracks)]
+    
+    -- Alternate between depot tracks clockwise, but skip occupied ones
+    local attempts = 0
+    local target = nil
+    
+    while attempts < #depot_tracks do
+        last_depot_track_index = (last_depot_track_index % #depot_tracks) + 1
+        local candidate = depot_tracks[last_depot_track_index]
+        
+        -- Check if this depot track is clear
+        if not isPositionOccupiedByOther(candidate.x, candidate.y, -1) then -- Use -1 as dummy train ID
+            target = candidate
+            break
+        end
+        
+        attempts = attempts + 1
+    end
+    
+    if not target then
+        debugLog("All depot tracks are occupied - cannot spawn train")
+        return
+    end
     local train = {
         id = train_id,
         x = depot.x,
@@ -516,126 +690,164 @@ function spawnTrain()
         current_track = nil, -- Track we're currently on
         came_from = nil, -- Track we came from (for dead end detection)
         direction = 1, -- 1 = outbound from depot, -1 = returning to depot
-        move_timer = 0,
-        path_stack = {} -- Stack of tracks for return journey
+        spawn_delay = 0.5 -- Small delay before train starts moving
     }
     
-    debugLog("Train " .. train.id .. " spawned at depot, targeting track at (" .. target.x .. "," .. target.y .. ")")
+    debugLog("Train " .. train.id .. " spawned at depot, targeting clear branch " .. last_depot_track_index .. " at (" .. target.x .. "," .. target.y .. ")")
     table.insert(trains, train)
 end
 
 function updateTrain(train, dt)
-    -- Update movement timer
-    train.move_timer = train.move_timer + dt
-    local MOVE_INTERVAL = 0.5 -- Move every 0.5 seconds
+    local TRAIN_SPEED = 60 -- pixels per second
     
-    -- Only attempt movement at discrete intervals
-    if train.move_timer >= MOVE_INTERVAL then
-        train.move_timer = 0
-        
-        local current_track_info = train.current_track and ("Track " .. train.current_track.id) or "Depot"
-        debugLog("Train " .. train.id .. " attempting move. Direction: " .. train.direction .. " Current: (" .. train.x .. "," .. train.y .. ") on " .. current_track_info)
-        
-        -- Determine next position based on direction
-        local target_x, target_y, target_track
-        
-        if train.direction == 1 then
-            -- Going outbound: move to target_track or find next track
-            if train.target_track then
-                target_x = train.target_track.x
-                target_y = train.target_track.y
-                target_track = train.target_track
-            else
-                debugLog("Train " .. train.id .. " has no target while going outbound")
-                return
-            end
+    -- Handle spawn delay
+    if train.spawn_delay and train.spawn_delay > 0 then
+        train.spawn_delay = train.spawn_delay - dt
+        if train.spawn_delay > 0 then
+            return -- Don't move yet
         else
-            -- Returning: find the track that leads back toward depot
-            if train.current_track then
-                local back_track = findTrackBackToDepot(train)
-                if back_track then
-                    target_x = back_track.x
-                    target_y = back_track.y
-                    target_track = back_track
-                else
-                    -- Direct connection to depot or no path back
-                    target_x = depot.x
-                    target_y = depot.y
-                    target_track = nil
-                end
-            else
-                -- We're at depot, stay there
-                target_x = depot.x
-                target_y = depot.y
-                target_track = nil
-            end
-        end
-        
-        -- Check for obstacles
-        local should_reverse = false
-        local reverse_reason = ""
-        
-        if target_track then
-            -- Check if target track is occupied by another train
-            if isPositionOccupied(target_x, target_y) then
-                should_reverse = true
-                reverse_reason = "collision with another train"
-            -- Check for dead end (no connections except where we came from)
-            elseif train.direction == 1 and not hasForwardConnection(target_track, train.current_track) then
-                should_reverse = true
-                reverse_reason = "dead end"
-            end
-        end
-        
-        -- Handle reversal
-        if should_reverse then
-            train.direction = -1 -- Start returning to depot
-            debugLog("Train " .. train.id .. " reversing due to: " .. reverse_reason)
-            return -- Don't move this turn, just reverse
-        end
-        
-        -- Execute the move
-        -- Free current position (unless at depot)
-        if not (train.x == depot.x and train.y == depot.y) then
-            freePosition(train.x, train.y)
-        end
-        
-        -- Store where we came from before moving
-        local previous_track = train.current_track
-        
-        -- Move to target position
-        train.x = target_x
-        train.y = target_y
-        train.current_track = target_track
-        train.came_from = previous_track
-        local target_track_info = target_track and ("Track " .. target_track.id) or "Depot"
-        debugLog("Train " .. train.id .. " moved to (" .. train.x .. "," .. train.y .. ") on " .. target_track_info)
-        
-        -- Occupy new position (unless it's depot)
-        if target_track then
-            occupyPosition(target_x, target_y, train.id)
-        end
-        
-        -- Update path tracking and next target
-        if train.direction == 1 then
-            -- Going outbound: push previous track to stack and find next target
-            if previous_track then
-                table.insert(train.path_stack, previous_track)
-                debugLog("Train " .. train.id .. " pushed track to stack, stack size: " .. #train.path_stack)
-            end
-            
-            if target_track then
-                local next_track = findNextTrack(train)
-                train.target_track = next_track
-                if not next_track then
-                    debugLog("Train " .. train.id .. " will hit dead end next turn")
-                end
-            end
-        else
-            -- Going inbound: we've consumed a track from our return journey
-            debugLog("Train " .. train.id .. " returning, stack size: " .. #train.path_stack)
+            train.spawn_delay = nil -- Remove delay once it's done
+            debugLog("Train " .. train.id .. " spawn delay complete, starting movement")
         end
     end
+    
+    -- Determine target position based on current state
+    local target_x, target_y
+    if train.target_track then
+        target_x = train.target_track.x
+        target_y = train.target_track.y
+    elseif train.direction == -1 then
+        -- Returning to depot
+        target_x = depot.x
+        target_y = depot.y
+    else
+        -- No target, stay in place
+        target_x = train.x
+        target_y = train.y
+    end
+    
+    -- Calculate direction and distance to target
+    local dx = target_x - train.x
+    local dy = target_y - train.y
+    local distance = math.sqrt(dx * dx + dy * dy)
+    
+    -- If we're close enough to target, handle arrival logic
+    if distance < 5 then
+        -- Snap to exact target position
+        train.x = target_x
+        train.y = target_y
+        
+        -- Handle arrival at target
+        handleTrainArrival(train)
+    else
+        -- Move toward target at constant speed
+        local move_distance = TRAIN_SPEED * dt
+        if move_distance > distance then
+            move_distance = distance -- Don't overshoot
+        end
+        
+        -- Normalize direction and apply movement
+        local dir_x = dx / distance
+        local dir_y = dy / distance
+        train.x = train.x + dir_x * move_distance
+        train.y = train.y + dir_y * move_distance
+    end
+end
+
+function handleTrainArrival(train)
+    local current_track_info = train.current_track and ("Track " .. train.current_track.id) or "Depot"
+    debugLog("Train " .. train.id .. " arrived. Direction: " .. train.direction .. " Current: (" .. train.x .. "," .. train.y .. ") on " .. current_track_info)
+    
+    -- Free current position (unless at depot)
+    if train.current_track then
+        freePosition(train.x, train.y)
+    end
+    
+    -- Store where we came from before moving
+    local previous_track = train.current_track
+    
+    -- Update current track based on where we arrived
+    if train.target_track and math.abs(train.x - train.target_track.x) < 5 and math.abs(train.y - train.target_track.y) < 5 then
+        -- Arrived at a track
+        train.current_track = train.target_track
+        train.came_from = previous_track
+        occupyPosition(train.x, train.y, train.id)
+        debugLog("Train " .. train.id .. " arrived at track " .. train.current_track.id)
+    elseif math.abs(train.x - depot.x) < 5 and math.abs(train.y - depot.y) < 5 then
+        -- Arrived at depot
+        train.current_track = nil
+        train.came_from = previous_track
+        debugLog("Train " .. train.id .. " arrived at depot")
+        return -- Stay at depot
+    end
+    
+    -- Determine next target based on direction
+    local next_target = nil
+    
+    if train.direction == 1 then
+        -- Going outbound: explore further
+        if train.current_track then
+            next_target = findNextTrack(train)
+            if not next_target then
+                -- Dead end - reverse direction and go back the way we came
+                train.direction = -1
+                debugLog("Train " .. train.id .. " hit dead end, reversing")
+                -- Simply go back to where we came from
+                next_target = train.came_from
+            end
+        end
+    else
+        -- Returning: use A* to find best route back
+        if train.current_track then
+            -- Always use A* pathfinding to ensure trains follow tracks
+            local path = findPathToDepot(train.current_track)
+            if path and #path > 0 then
+                -- If path only contains current track, it means we can go direct to depot
+                if #path == 1 and path[1] == train.current_track and train.current_track.connected_to_depot then
+                    next_target = nil -- Go directly to depot
+                    debugLog("Train " .. train.id .. " taking direct route to depot from connected track")
+                else
+                    -- Take the first step in the optimal path
+                    for _, track in ipairs(path) do
+                        if track ~= train.current_track and not isPositionOccupiedByOther(track.x, track.y, train.id) then
+                            next_target = track
+                            break
+                        end
+                    end
+                    if not next_target then
+                        -- All tracks in path are occupied, try going to depot if connected
+                        if train.current_track.connected_to_depot then
+                            next_target = nil -- Go to depot
+                            debugLog("Train " .. train.id .. " path blocked, taking direct route to depot")
+                        end
+                    end
+                end
+            else
+                debugLog("Train " .. train.id .. " ERROR: No path to depot found!")
+            end
+        end
+    end
+    
+    -- Check for collisions with next target
+    if next_target and isPositionOccupiedByOther(next_target.x, next_target.y, train.id) then
+        local occupying_train_id = occupied_positions[getPositionKey(next_target.x, next_target.y)]
+        debugLog("Train " .. train.id .. " collision ahead with train " .. occupying_train_id .. " on " .. next_target.id)
+        
+        -- If we're going outbound and hit a collision, reverse direction
+        if train.direction == 1 then
+            train.direction = -1
+            debugLog("Train " .. train.id .. " reversing due to collision")
+            -- Try to go back where we came from
+            next_target = train.came_from
+        else
+            -- If we're already returning and hit collision, just wait
+            next_target = nil
+        end
+    end
+    
+    train.target_track = next_target
+    local target_info = next_target and ("Track " .. next_target.id) or "Depot"
+    debugLog("Train " .. train.id .. " new target: " .. target_info)
 end
 
 function hasForwardConnection(track, came_from_track)
@@ -648,35 +860,6 @@ function hasForwardConnection(track, came_from_track)
     return false
 end
 
-function findTrackBackToDepot(train)
-    if not train.current_track then return nil end
-    
-    -- Use the path stack to find the next track back
-    if #train.path_stack > 0 then
-        local next_track_back = train.path_stack[#train.path_stack]
-        table.remove(train.path_stack) -- Pop the track from stack
-        debugLog("Train " .. train.id .. " popped track from stack, returning to track " .. next_track_back.id .. ", stack size now: " .. #train.path_stack)
-        return next_track_back
-    end
-    
-    -- Stack is empty, check if current track connects to depot
-    if train.current_track.connected_to_depot then
-        debugLog("Train " .. train.id .. " on depot-connected track, heading to depot")
-        return nil -- Signal to go to depot
-    end
-    
-    -- Fallback: try to find any track that connects to depot
-    for _, connected_track in ipairs(train.current_track.connections) do
-        if connected_track.connected_to_depot then
-            debugLog("Train " .. train.id .. " found depot connection via " .. connected_track.id)
-            return connected_track
-        end
-    end
-    
-    -- No path back found
-    debugLog("Train " .. train.id .. " ERROR: No path back to depot found!")
-    return nil
-end
 
 function findNextTrack(train)
     if not train.current_track then return nil end
