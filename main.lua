@@ -154,8 +154,7 @@ function love.load()
     TRAIN_SPAWN_INTERVAL = 3 -- seconds
     last_depot_track_index = 0 -- For alternating depot branch selection
     
-    -- Position management - track which positions are occupied
-    occupied_positions = {} -- Format: [x_y] = train_id
+    -- Hand cart system - carts can share tracks bidirectionally
     
     -- Debug logging with UI panel settings
     debug_log = {}
@@ -174,49 +173,86 @@ function love.load()
     last_placed_position = {x = nil, y = nil} -- Track debouncing
 end
 
--- Position management functions
-function getPositionKey(x, y)
-    return x .. "_" .. y
+-- Hand cart collision detection functions
+function findCartsAt(x, y)
+    -- Find all carts at a specific position
+    local carts_here = {}
+    for _, cart in ipairs(trains) do
+        if math.abs(cart.x - x) < 10 and math.abs(cart.y - y) < 10 then
+            table.insert(carts_here, cart)
+        end
+    end
+    return carts_here
 end
 
-function isPositionOccupied(x, y)
-    local key = getPositionKey(x, y)
-    return occupied_positions[key] ~= nil
+function findCartCollisions(cart)
+    -- Find any carts this cart would collide with at its target position
+    if not cart.target_track then return {} end
+    
+    local collisions = {}
+    for _, other_cart in ipairs(trains) do
+        if other_cart ~= cart and other_cart.current_track == cart.target_track then
+            table.insert(collisions, other_cart)
+        end
+    end
+    return collisions
 end
 
-function isPositionOccupiedByOther(x, y, train_id)
-    local key = getPositionKey(x, y)
-    local occupying_train = occupied_positions[key]
-    return occupying_train ~= nil and occupying_train ~= train_id
-end
-
-function occupyPosition(x, y, train_id)
-    local key = getPositionKey(x, y)
-    occupied_positions[key] = train_id
-end
-
-function freePosition(x, y)
-    local key = getPositionKey(x, y)
-    occupied_positions[key] = nil
-end
-
-function clearTrainFromAllPositions(train_id)
-    -- Remove this train from all occupied positions
-    local positions_to_clear = {}
-    for position_key, occupying_train_id in pairs(occupied_positions) do
-        if occupying_train_id == train_id then
-            table.insert(positions_to_clear, position_key)
+function findClosestDepotTrack(from_track)
+    -- Find the depot track that's closest to the given track
+    local closest_track = nil
+    local closest_distance = math.huge
+    
+    for _, track in ipairs(tracks) do
+        if track.connected_to_depot then
+            local distance = math.sqrt((track.x - from_track.x)^2 + (track.y - from_track.y)^2)
+            if distance < closest_distance then
+                closest_distance = distance
+                closest_track = track
+            end
         end
     end
     
-    for _, position_key in ipairs(positions_to_clear) do
-        occupied_positions[position_key] = nil
-        debugLog("Cleared position " .. position_key .. " previously occupied by train " .. train_id)
+    if closest_track then
+        -- Use A* to find path to closest depot track
+        local path = findPathToDepot(from_track)
+        if path and #path > 1 then
+            -- Return first step in path
+            return path[2] -- path[1] is current track
+        end
+    end
+    
+    return closest_track
+end
+
+function handleCartCollision(cart, other_cart)
+    -- Hand cart collision behavior: same direction = link, opposite = bounce
+    debugLog("Cart " .. cart.id .. " (dir:" .. cart.direction .. ") colliding with cart " .. other_cart.id .. " (dir:" .. other_cart.direction .. ")")
+    
+    if cart.direction == other_cart.direction then
+        -- Same direction - wait for other cart to move
+        debugLog("Cart " .. cart.id .. " waiting for " .. other_cart.id .. " (same direction)")
+        cart.waiting = true
+        -- Keep current target but don't move this cycle
+    else
+        -- Opposite directions - returning cart has priority
+        if cart.direction == -1 then
+            -- This cart is returning, other cart bounces
+            debugLog("Cart " .. cart.id .. " (returning) has priority, cart " .. other_cart.id .. " should bounce")
+            -- Force other cart to reverse
+            other_cart.direction = -1
+            other_cart.target_track = findClosestDepotTrack(other_cart.current_track)
+        else
+            -- This cart is outbound, it bounces
+            debugLog("Cart " .. cart.id .. " (outbound) bouncing due to returning cart " .. other_cart.id)
+            cart.direction = -1
+            cart.target_track = findClosestDepotTrack(cart.current_track)
+        end
     end
 end
 
 function getTrackAt(x, y)
-    local key = getPositionKey(x, y)
+    local key = x .. "_" .. y
     return track_map[key]
 end
 
@@ -325,12 +361,10 @@ function love.update(dt)
         
         -- Remove trains that have returned to depot
         if train.direction == -1 and 
-           math.abs(train.x - depot.x) < 20 and 
-           math.abs(train.y - depot.y) < 20 and
+           train.logical_x == depot.x and 
+           train.logical_y == depot.y and
            train.current_track == nil then
-            debugLog("REMOVING Train " .. train.id .. " - returned to depot")
-            -- Free any positions this train might still be occupying
-            clearTrainFromAllPositions(train.id)
+            debugLog("REMOVING Cart " .. train.id .. " - returned to depot")
             table.remove(trains, i)
         end
     end
@@ -421,14 +455,8 @@ function love.draw()
     love.graphics.setColor(1, 1, 1)
     love.graphics.print("CLICK: Place/Remove tracks | SPACE: Spawn train | ESC: Quit | ↑↓: Scroll log", 10, 10)
     love.graphics.print("Move mouse to pan camera! | Mouse wheel: Zoom", 10, 30)
-    love.graphics.print("Trains: " .. #trains .. " | Tracks: " .. #tracks .. " | Zoom: " .. string.format("%.1f", camera.zoom) .. "x", 10, 50)
-    
-    -- Count occupied positions for debugging
-    local occupied_count = 0
-    for _ in pairs(occupied_positions) do
-        occupied_count = occupied_count + 1
-    end
-    love.graphics.print("Red=outbound, Blue=returning | Occupied positions: " .. occupied_count, 10, 70)
+    love.graphics.print("Carts: " .. #trains .. " | Tracks: " .. #tracks .. " | Zoom: " .. string.format("%.1f", camera.zoom) .. "x", 10, 50)
+    love.graphics.print("Red=outbound, Blue=returning | Hand cart system", 10, 70)
     
     -- Draw debug log panel in lower right
     drawDebugLogPanel()
@@ -465,7 +493,7 @@ end
 function love.keypressed(key)
     if key == "space" then
         spawnTrain()
-        debugLog("=== SPAWNED TRAIN ===")
+        debugLog("=== SPAWNED CART ===")
     elseif key == "escape" then
         love.event.quit()
     elseif key == "up" then
@@ -545,7 +573,7 @@ function placeTrack(x, y)
     table.insert(tracks, new_track)
     
     -- Add to hash map for fast lookup
-    local position_key = getPositionKey(grid_x, grid_y)
+    local position_key = grid_x .. "_" .. grid_y
     track_map[position_key] = new_track
     
     -- Auto-connect to nearby tracks
@@ -560,7 +588,7 @@ function removeTrack(track_to_remove, track_index)
     debugLog("Removing track " .. track_to_remove.id .. " at (" .. track_to_remove.x .. "," .. track_to_remove.y .. ")")
     
     -- Remove from track_map
-    local position_key = getPositionKey(track_to_remove.x, track_to_remove.y)
+    local position_key = track_to_remove.x .. "_" .. track_to_remove.y
     track_map[position_key] = nil
     
     -- Remove connections from other tracks to this track
@@ -574,8 +602,7 @@ function removeTrack(track_to_remove, track_index)
         end
     end
     
-    -- Free any occupied position
-    freePosition(track_to_remove.x, track_to_remove.y)
+    -- No position cleanup needed in hand cart system
     
     -- Remove from tracks array
     table.remove(tracks, track_index)
@@ -661,27 +688,9 @@ function spawnTrain()
     -- Spawn simple train at depot
     local train_id = math.floor(love.timer.getTime() * 100) -- Simpler ID for logging
     
-    -- Alternate between depot tracks clockwise, but skip occupied ones
-    local attempts = 0
-    local target = nil
-    
-    while attempts < #depot_tracks do
-        last_depot_track_index = (last_depot_track_index % #depot_tracks) + 1
-        local candidate = depot_tracks[last_depot_track_index]
-        
-        -- Check if this depot track is clear
-        if not isPositionOccupiedByOther(candidate.x, candidate.y, -1) then -- Use -1 as dummy train ID
-            target = candidate
-            break
-        end
-        
-        attempts = attempts + 1
-    end
-    
-    if not target then
-        debugLog("All depot tracks are occupied - cannot spawn train")
-        return
-    end
+    -- Alternate between depot tracks clockwise
+    last_depot_track_index = (last_depot_track_index % #depot_tracks) + 1
+    local target = depot_tracks[last_depot_track_index]
     local train = {
         id = train_id,
         x = depot.x,
@@ -690,164 +699,135 @@ function spawnTrain()
         current_track = nil, -- Track we're currently on
         came_from = nil, -- Track we came from (for dead end detection)
         direction = 1, -- 1 = outbound from depot, -1 = returning to depot
-        spawn_delay = 0.5 -- Small delay before train starts moving
+        waiting = false, -- True when waiting for another cart
+        -- Logical vs visual position separation
+        logical_x = depot.x,
+        logical_y = depot.y,
+        move_timer = 0,
+        move_progress = 0 -- 0 to 1, progress between logical positions
     }
     
-    debugLog("Train " .. train.id .. " spawned at depot, targeting clear branch " .. last_depot_track_index .. " at (" .. target.x .. "," .. target.y .. ")")
+    debugLog("Cart " .. train.id .. " spawned at depot, targeting branch " .. last_depot_track_index .. " at (" .. target.x .. "," .. target.y .. ")")
     table.insert(trains, train)
 end
 
 function updateTrain(train, dt)
-    local TRAIN_SPEED = 60 -- pixels per second
+    local MOVE_INTERVAL = 1.0 -- Logical movement every 1 second
     
-    -- Handle spawn delay
-    if train.spawn_delay and train.spawn_delay > 0 then
-        train.spawn_delay = train.spawn_delay - dt
-        if train.spawn_delay > 0 then
-            return -- Don't move yet
-        else
-            train.spawn_delay = nil -- Remove delay once it's done
-            debugLog("Train " .. train.id .. " spawn delay complete, starting movement")
-        end
-    end
+    -- Update movement timer and visual interpolation
+    train.move_timer = train.move_timer + dt
+    train.move_progress = math.min(1.0, train.move_timer / MOVE_INTERVAL)
     
-    -- Determine target position based on current state
-    local target_x, target_y
+    -- Determine target logical position
+    local target_logical_x, target_logical_y
     if train.target_track then
-        target_x = train.target_track.x
-        target_y = train.target_track.y
+        target_logical_x = train.target_track.x
+        target_logical_y = train.target_track.y
     elseif train.direction == -1 then
         -- Returning to depot
-        target_x = depot.x
-        target_y = depot.y
+        target_logical_x = depot.x
+        target_logical_y = depot.y
     else
-        -- No target, stay in place
-        target_x = train.x
-        target_y = train.y
+        -- No target, stay at current logical position
+        target_logical_x = train.logical_x
+        target_logical_y = train.logical_y
     end
     
-    -- Calculate direction and distance to target
-    local dx = target_x - train.x
-    local dy = target_y - train.y
-    local distance = math.sqrt(dx * dx + dy * dy)
+    -- Smooth visual interpolation between logical positions
+    local t = smoothstep(train.move_progress)
+    train.x = train.logical_x + (target_logical_x - train.logical_x) * t
+    train.y = train.logical_y + (target_logical_y - train.logical_y) * t
     
-    -- If we're close enough to target, handle arrival logic
-    if distance < 5 then
-        -- Snap to exact target position
-        train.x = target_x
-        train.y = target_y
+    -- Handle logical movement at intervals
+    if train.move_timer >= MOVE_INTERVAL then
+        train.move_timer = 0
+        train.move_progress = 0
         
-        -- Handle arrival at target
-        handleTrainArrival(train)
-    else
-        -- Move toward target at constant speed
-        local move_distance = TRAIN_SPEED * dt
-        if move_distance > distance then
-            move_distance = distance -- Don't overshoot
+        -- Don't move if waiting for another cart
+        if train.waiting then
+            debugLog("Cart " .. train.id .. " waiting, skipping movement")
+            return
         end
         
-        -- Normalize direction and apply movement
-        local dir_x = dx / distance
-        local dir_y = dy / distance
-        train.x = train.x + dir_x * move_distance
-        train.y = train.y + dir_y * move_distance
+        -- Check if we've reached the target logically
+        if target_logical_x ~= train.logical_x or target_logical_y ~= train.logical_y then
+            -- Move to target logical position
+            train.logical_x = target_logical_x
+            train.logical_y = target_logical_y
+            
+            -- Handle arrival at logical target
+            handleTrainArrival(train)
+        end
     end
 end
 
 function handleTrainArrival(train)
     local current_track_info = train.current_track and ("Track " .. train.current_track.id) or "Depot"
-    debugLog("Train " .. train.id .. " arrived. Direction: " .. train.direction .. " Current: (" .. train.x .. "," .. train.y .. ") on " .. current_track_info)
-    
-    -- Free current position (unless at depot)
-    if train.current_track then
-        freePosition(train.x, train.y)
-    end
+    debugLog("Cart " .. train.id .. " arrived. Direction: " .. train.direction .. " Logical: (" .. train.logical_x .. "," .. train.logical_y .. ") on " .. current_track_info)
     
     -- Store where we came from before moving
     local previous_track = train.current_track
     
-    -- Update current track based on where we arrived
-    if train.target_track and math.abs(train.x - train.target_track.x) < 5 and math.abs(train.y - train.target_track.y) < 5 then
+    -- Update current track based on logical arrival position
+    if train.target_track and train.logical_x == train.target_track.x and train.logical_y == train.target_track.y then
         -- Arrived at a track
         train.current_track = train.target_track
         train.came_from = previous_track
-        occupyPosition(train.x, train.y, train.id)
-        debugLog("Train " .. train.id .. " arrived at track " .. train.current_track.id)
-    elseif math.abs(train.x - depot.x) < 5 and math.abs(train.y - depot.y) < 5 then
+        debugLog("Cart " .. train.id .. " arrived at track " .. train.current_track.id)
+    elseif train.logical_x == depot.x and train.logical_y == depot.y then
         -- Arrived at depot
         train.current_track = nil
         train.came_from = previous_track
-        debugLog("Train " .. train.id .. " arrived at depot")
+        debugLog("Cart " .. train.id .. " arrived at depot")
         return -- Stay at depot
     end
     
-    -- Determine next target based on direction
+    -- Hand cart behavior: explore until track ends or hits junction, then seek closest depot
     local next_target = nil
     
     if train.direction == 1 then
-        -- Going outbound: explore further
+        -- Going outbound: explore until track ends or junction
         if train.current_track then
             next_target = findNextTrack(train)
             if not next_target then
-                -- Dead end - reverse direction and go back the way we came
+                -- Track ends - reverse and seek closest depot
                 train.direction = -1
-                debugLog("Train " .. train.id .. " hit dead end, reversing")
-                -- Simply go back to where we came from
-                next_target = train.came_from
+                debugLog("Cart " .. train.id .. " reached track end, seeking depot")
+                next_target = findClosestDepotTrack(train.current_track)
             end
         end
     else
-        -- Returning: use A* to find best route back
+        -- Returning: head toward closest depot
         if train.current_track then
-            -- Always use A* pathfinding to ensure trains follow tracks
-            local path = findPathToDepot(train.current_track)
-            if path and #path > 0 then
-                -- If path only contains current track, it means we can go direct to depot
-                if #path == 1 and path[1] == train.current_track and train.current_track.connected_to_depot then
-                    next_target = nil -- Go directly to depot
-                    debugLog("Train " .. train.id .. " taking direct route to depot from connected track")
-                else
-                    -- Take the first step in the optimal path
-                    for _, track in ipairs(path) do
-                        if track ~= train.current_track and not isPositionOccupiedByOther(track.x, track.y, train.id) then
-                            next_target = track
-                            break
-                        end
-                    end
-                    if not next_target then
-                        -- All tracks in path are occupied, try going to depot if connected
-                        if train.current_track.connected_to_depot then
-                            next_target = nil -- Go to depot
-                            debugLog("Train " .. train.id .. " path blocked, taking direct route to depot")
-                        end
-                    end
-                end
+            if train.current_track.connected_to_depot then
+                next_target = nil -- Go directly to depot
+                debugLog("Cart " .. train.id .. " taking direct route to depot")
             else
-                debugLog("Train " .. train.id .. " ERROR: No path to depot found!")
+                next_target = findClosestDepotTrack(train.current_track)
             end
         end
     end
     
-    -- Check for collisions with next target
-    if next_target and isPositionOccupiedByOther(next_target.x, next_target.y, train.id) then
-        local occupying_train_id = occupied_positions[getPositionKey(next_target.x, next_target.y)]
-        debugLog("Train " .. train.id .. " collision ahead with train " .. occupying_train_id .. " on " .. next_target.id)
-        
-        -- If we're going outbound and hit a collision, reverse direction
-        if train.direction == 1 then
-            train.direction = -1
-            debugLog("Train " .. train.id .. " reversing due to collision")
-            -- Try to go back where we came from
-            next_target = train.came_from
-        else
-            -- If we're already returning and hit collision, just wait
-            next_target = nil
+    -- Clear waiting state from previous cycle
+    train.waiting = false
+    
+    -- Check for collisions and handle hand cart linking/bouncing
+    if next_target then
+        local colliding_carts = findCartCollisions(train)
+        if #colliding_carts > 0 then
+            handleCartCollision(train, colliding_carts[1])
+            -- If cart is now waiting, don't change the target
+            if train.waiting then
+                next_target = train.target_track -- Keep original target
+            else
+                next_target = train.target_track -- May have been changed by collision
+            end
         end
     end
     
     train.target_track = next_target
     local target_info = next_target and ("Track " .. next_target.id) or "Depot"
-    debugLog("Train " .. train.id .. " new target: " .. target_info)
+    debugLog("Cart " .. train.id .. " new target: " .. target_info)
 end
 
 function hasForwardConnection(track, came_from_track)
@@ -875,3 +855,4 @@ function findNextTrack(train)
     -- No forward options found - we've hit a dead end
     return nil
 end
+
