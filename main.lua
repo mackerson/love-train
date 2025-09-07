@@ -97,16 +97,16 @@ function isInSet(item, set)
     return false
 end
 
--- Check if a train is on a valid track or at depot
+-- Check if a train is on a valid track or at depot (using logical position)
 function isTrainOnValidPosition(train)
     -- Check if at depot
-    if math.abs(train.x - depot.x) < 20 and math.abs(train.y - depot.y) < 20 then
+    if train.logical_x == depot.x and train.logical_y == depot.y then
         return true
     end
     
     -- Check if on any track
     for _, track in ipairs(tracks) do
-        if math.abs(train.x - track.x) < 15 and math.abs(train.y - track.y) < 15 then
+        if train.logical_x == track.x and train.logical_y == track.y then
             return true
         end
     end
@@ -114,14 +114,14 @@ function isTrainOnValidPosition(train)
     return false
 end
 
--- Find nearest unoccupied track to a train
+-- Find nearest unoccupied track to a train (using logical position)
 function findNearestUnoccupiedTrack(train)
     local nearest_track = nil
     local nearest_distance = math.huge
     
     for _, track in ipairs(tracks) do
         if not isPositionOccupiedByOther(track.x, track.y, train.id) then
-            local distance = math.sqrt((train.x - track.x)^2 + (train.y - track.y)^2)
+            local distance = math.sqrt((train.logical_x - track.x)^2 + (train.logical_y - track.y)^2)
             if distance < nearest_distance then
                 nearest_distance = distance
                 nearest_track = track
@@ -363,8 +363,8 @@ function love.update(dt)
         
         -- Remove trains that have returned to depot
         if train.direction == -1 and 
-           math.abs(train.x - depot.x) < 20 and 
-           math.abs(train.y - depot.y) < 20 and
+           train.logical_x == depot.x and 
+           train.logical_y == depot.y and
            train.current_track == nil then
             debugLog("REMOVING Train " .. train.id .. " - returned to depot")
             -- Free any positions this train might still be occupying
@@ -735,8 +735,10 @@ function spawnTrain()
     end
     local train = {
         id = train_id,
-        x = depot.x,
-        y = depot.y,
+        x = depot.x, -- Visual position
+        y = depot.y, -- Visual position
+        logical_x = depot.x, -- Logical grid position
+        logical_y = depot.y, -- Logical grid position
         target_track = target,
         current_track = nil, -- Track we're currently on
         came_from = nil, -- Track we came from (for dead end detection)
@@ -745,7 +747,9 @@ function spawnTrain()
         state = "moving", -- "moving", "stopped", "off_track"
         stop_timer = 0, -- Timer for how long train has been stopped
         off_track_timer = 0, -- Timer for detecting off-track situations
-        blocked_target = nil -- Remember what target was blocked when stopped
+        blocked_target = nil, -- Remember what target was blocked when stopped
+        move_timer = 0, -- Timer for smooth interpolation
+        move_progress = 0 -- 0 to 1, progress between logical positions
     }
     
     debugLog("Train " .. train.id .. " spawned at depot, targeting clear branch " .. last_depot_track_index .. " at (" .. target.x .. "," .. target.y .. ")")
@@ -753,7 +757,7 @@ function spawnTrain()
 end
 
 function updateTrain(train, dt)
-    local TRAIN_SPEED = 60 -- pixels per second
+    local MOVE_INTERVAL = 1.0 -- Logical movement every 1 second
     
     -- Handle spawn delay
     if train.spawn_delay and train.spawn_delay > 0 then
@@ -765,6 +769,10 @@ function updateTrain(train, dt)
             debugLog("Train " .. train.id .. " spawn delay complete, starting movement")
         end
     end
+    
+    -- Update movement timer and visual interpolation
+    train.move_timer = train.move_timer + dt
+    train.move_progress = math.min(1.0, train.move_timer / MOVE_INTERVAL)
     
     -- Check if train is off track and handle it
     if train.state ~= "off_track" and not isTrainOnValidPosition(train) then
@@ -826,52 +834,46 @@ function updateTrain(train, dt)
         return
     end
     
-    -- Determine target position based on current state
-    local target_x, target_y
+    -- Determine target logical position
+    local target_logical_x, target_logical_y
     if train.target_track then
-        target_x = train.target_track.x
-        target_y = train.target_track.y
+        target_logical_x = train.target_track.x
+        target_logical_y = train.target_track.y
     elseif train.direction == -1 then
         -- Returning to depot
-        target_x = depot.x
-        target_y = depot.y
+        target_logical_x = depot.x
+        target_logical_y = depot.y
     else
-        -- No target, stay in place
-        target_x = train.x
-        target_y = train.y
+        -- No target, stay at current logical position
+        target_logical_x = train.logical_x
+        target_logical_y = train.logical_y
     end
     
-    -- Calculate direction and distance to target
-    local dx = target_x - train.x
-    local dy = target_y - train.y
-    local distance = math.sqrt(dx * dx + dy * dy)
+    -- Smooth visual interpolation between logical positions
+    local t = smoothstep(train.move_progress)
+    train.x = train.logical_x + (target_logical_x - train.logical_x) * t
+    train.y = train.logical_y + (target_logical_y - train.logical_y) * t
     
-    -- If we're close enough to target, handle arrival logic
-    if distance < 5 then
-        -- Snap to exact target position
-        train.x = target_x
-        train.y = target_y
+    -- Handle logical movement at intervals
+    if train.move_timer >= MOVE_INTERVAL then
+        train.move_timer = 0
+        train.move_progress = 0
         
-        -- Handle arrival at target
-        handleTrainArrival(train)
-    else
-        -- Move toward target at constant speed
-        local move_distance = TRAIN_SPEED * dt
-        if move_distance > distance then
-            move_distance = distance -- Don't overshoot
+        -- Check if we've reached the target logically
+        if target_logical_x ~= train.logical_x or target_logical_y ~= train.logical_y then
+            -- Move to target logical position
+            train.logical_x = target_logical_x
+            train.logical_y = target_logical_y
+            
+            -- Handle arrival at logical target
+            handleTrainArrival(train)
         end
-        
-        -- Normalize direction and apply movement
-        local dir_x = dx / distance
-        local dir_y = dy / distance
-        train.x = train.x + dir_x * move_distance
-        train.y = train.y + dir_y * move_distance
     end
 end
 
 function handleTrainArrival(train)
     local current_track_info = train.current_track and ("Track " .. train.current_track.id) or "Depot"
-    debugLog("Train " .. train.id .. " arrived. Direction: " .. train.direction .. " Current: (" .. train.x .. "," .. train.y .. ") on " .. current_track_info)
+    debugLog("Train " .. train.id .. " arrived. Direction: " .. train.direction .. " Logical: (" .. train.logical_x .. "," .. train.logical_y .. ") on " .. current_track_info)
     
     -- Free current position (unless at depot)
     if train.current_track then
@@ -882,14 +884,14 @@ function handleTrainArrival(train)
     -- Store where we came from before moving
     local previous_track = train.current_track
     
-    -- Update current track based on where we arrived
-    if train.target_track and math.abs(train.x - train.target_track.x) < 5 and math.abs(train.y - train.target_track.y) < 5 then
+    -- Update current track based on logical arrival position
+    if train.target_track and train.logical_x == train.target_track.x and train.logical_y == train.target_track.y then
         -- Arrived at a track
         train.current_track = train.target_track
         train.came_from = previous_track
-        occupyPosition(train.x, train.y, train.id)
+        occupyPosition(train.logical_x, train.logical_y, train.id)
         debugLog("Train " .. train.id .. " arrived at track " .. train.current_track.id)
-    elseif math.abs(train.x - depot.x) < 5 and math.abs(train.y - depot.y) < 5 then
+    elseif train.logical_x == depot.x and train.logical_y == depot.y then
         -- Arrived at depot
         train.current_track = nil
         train.came_from = previous_track
