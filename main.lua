@@ -97,6 +97,41 @@ function isInSet(item, set)
     return false
 end
 
+-- Check if a train is on a valid track or at depot
+function isTrainOnValidPosition(train)
+    -- Check if at depot
+    if math.abs(train.x - depot.x) < 20 and math.abs(train.y - depot.y) < 20 then
+        return true
+    end
+    
+    -- Check if on any track
+    for _, track in ipairs(tracks) do
+        if math.abs(train.x - track.x) < 15 and math.abs(train.y - track.y) < 15 then
+            return true
+        end
+    end
+    
+    return false
+end
+
+-- Find nearest unoccupied track to a train
+function findNearestUnoccupiedTrack(train)
+    local nearest_track = nil
+    local nearest_distance = math.huge
+    
+    for _, track in ipairs(tracks) do
+        if not isPositionOccupiedByOther(track.x, track.y, train.id) then
+            local distance = math.sqrt((train.x - track.x)^2 + (train.y - track.y)^2)
+            if distance < nearest_distance then
+                nearest_distance = distance
+                nearest_track = track
+            end
+        end
+    end
+    
+    return nearest_track
+end
+
 function love.load()
     -- Enable console on Windows for debugging
     if love.system.getOS() == "Windows" then
@@ -153,6 +188,9 @@ function love.load()
     train_spawn_timer = 0
     TRAIN_SPAWN_INTERVAL = 3 -- seconds
     last_depot_track_index = 0 -- For alternating depot branch selection
+    
+    -- Train behavior constants
+    TRAIN_STOP_WAIT_TIME = 2.0 -- seconds to wait when stopped by collision
     
     -- Position management - track which positions are occupied
     occupied_positions = {} -- Format: [x_y] = train_id
@@ -332,6 +370,12 @@ function love.update(dt)
             -- Free any positions this train might still be occupying
             clearTrainFromAllPositions(train.id)
             table.remove(trains, i)
+        
+        -- Also remove trains that have been off-track for too long
+        elseif train.state == "off_track" and train.off_track_timer > 10 then
+            debugLog("REMOVING Train " .. train.id .. " - off track too long")
+            clearTrainFromAllPositions(train.id)
+            table.remove(trains, i)
         end
     end
 end
@@ -372,7 +416,14 @@ function love.draw()
         -- Train color and movement indicators
         local pulse = 0.8 + 0.2 * math.sin(love.timer.getTime() * 10)
         
-        if train.direction == -1 then
+        if train.state == "stopped" then
+            -- Stopped trains are yellow with pulsing
+            love.graphics.setColor(0.9 * pulse, 0.9 * pulse, 0.1 * pulse)
+        elseif train.state == "off_track" then
+            -- Off-track trains are magenta with fast pulsing
+            local fast_pulse = 0.5 + 0.5 * math.sin(love.timer.getTime() * 20)
+            love.graphics.setColor(0.9 * fast_pulse, 0.1, 0.9 * fast_pulse)
+        elseif train.direction == -1 then
             -- Returning trains are blue with gentle pulsing
             love.graphics.setColor(0.1 * pulse, 0.1 * pulse, 0.8 * pulse)
         else
@@ -428,7 +479,7 @@ function love.draw()
     for _ in pairs(occupied_positions) do
         occupied_count = occupied_count + 1
     end
-    love.graphics.print("Red=outbound, Blue=returning | Occupied positions: " .. occupied_count, 10, 70)
+    love.graphics.print("Red=outbound, Blue=returning, Yellow=stopped, Magenta=off-track | Occupied: " .. occupied_count, 10, 70)
     
     -- Draw debug log panel in lower right
     drawDebugLogPanel()
@@ -690,7 +741,11 @@ function spawnTrain()
         current_track = nil, -- Track we're currently on
         came_from = nil, -- Track we came from (for dead end detection)
         direction = 1, -- 1 = outbound from depot, -1 = returning to depot
-        spawn_delay = 0.5 -- Small delay before train starts moving
+        spawn_delay = 0.5, -- Small delay before train starts moving
+        state = "moving", -- "moving", "stopped", "off_track"
+        stop_timer = 0, -- Timer for how long train has been stopped
+        off_track_timer = 0, -- Timer for detecting off-track situations
+        blocked_target = nil -- Remember what target was blocked when stopped
     }
     
     debugLog("Train " .. train.id .. " spawned at depot, targeting clear branch " .. last_depot_track_index .. " at (" .. target.x .. "," .. target.y .. ")")
@@ -709,6 +764,66 @@ function updateTrain(train, dt)
             train.spawn_delay = nil -- Remove delay once it's done
             debugLog("Train " .. train.id .. " spawn delay complete, starting movement")
         end
+    end
+    
+    -- Check if train is off track and handle it
+    if train.state ~= "off_track" and not isTrainOnValidPosition(train) then
+        train.off_track_timer = train.off_track_timer + dt
+        if train.off_track_timer > 0.5 then -- Give 0.5 seconds grace period
+            train.state = "off_track"
+            debugLog("Train " .. train.id .. " detected off track at (" .. train.x .. "," .. train.y .. ")")
+        end
+    else
+        train.off_track_timer = 0 -- Reset timer if back on track
+    end
+    
+    -- Handle different train states
+    if train.state == "stopped" then
+        -- Train is stopped due to collision, wait before trying again
+        train.stop_timer = train.stop_timer + dt
+        if train.stop_timer >= TRAIN_STOP_WAIT_TIME then
+            train.state = "moving"
+            train.stop_timer = 0
+            debugLog("Train " .. train.id .. " resuming movement after stop")
+            
+            -- Check if the blocked path is now clear
+            if train.blocked_target and not isPositionOccupiedByOther(train.blocked_target.x, train.blocked_target.y, train.id) then
+                -- Path is clear, continue with original plan
+                debugLog("Train " .. train.id .. " blocked path now clear, continuing")
+                train.target_track = train.blocked_target
+                train.blocked_target = nil
+            else
+                -- Path still blocked or no blocked target, reverse direction
+                if train.direction == 1 then
+                    train.direction = -1
+                    debugLog("Train " .. train.id .. " path still blocked, reversing direction")
+                end
+                train.blocked_target = nil
+                -- Re-evaluate what to do next
+                handleTrainArrival(train)
+            end
+        end
+        return -- Don't move while stopped
+        
+    elseif train.state == "off_track" then
+        -- Train is off track, return to nearest unoccupied track
+        local nearest_track = findNearestUnoccupiedTrack(train)
+        if nearest_track then
+            train.target_track = nearest_track
+            train.state = "moving"
+            debugLog("Train " .. train.id .. " returning to nearest track at (" .. nearest_track.x .. "," .. nearest_track.y .. ")")
+        else
+            -- No available tracks, return to depot
+            train.target_track = nil
+            train.direction = -1
+            train.state = "moving"
+            debugLog("Train " .. train.id .. " no available tracks, returning to depot")
+        end
+    end
+    
+    -- Only move if in moving state
+    if train.state ~= "moving" then
+        return
     end
     
     -- Determine target position based on current state
@@ -760,7 +875,8 @@ function handleTrainArrival(train)
     
     -- Free current position (unless at depot)
     if train.current_track then
-        freePosition(train.x, train.y)
+        freePosition(train.current_track.x, train.current_track.y)
+        debugLog("Train " .. train.id .. " freed position (" .. train.current_track.x .. "," .. train.current_track.y .. ")")
     end
     
     -- Store where we came from before moving
@@ -831,18 +947,20 @@ function handleTrainArrival(train)
     -- Check for collisions with next target
     if next_target and isPositionOccupiedByOther(next_target.x, next_target.y, train.id) then
         local occupying_train_id = occupied_positions[getPositionKey(next_target.x, next_target.y)]
-        debugLog("Train " .. train.id .. " collision ahead with train " .. occupying_train_id .. " on " .. next_target.id)
+        debugLog("Train " .. train.id .. " collision ahead with train " .. occupying_train_id .. " on " .. next_target.id .. " - stopping to wait")
         
-        -- If we're going outbound and hit a collision, reverse direction
+        -- Stop and wait instead of immediately reversing
+        train.state = "stopped"
+        train.stop_timer = 0
+        train.target_track = nil -- Don't move until we resume
+        
+        -- Store what we wanted to do for when we resume
         if train.direction == 1 then
-            train.direction = -1
-            debugLog("Train " .. train.id .. " reversing due to collision")
-            -- Try to go back where we came from
-            next_target = train.came_from
-        else
-            -- If we're already returning and hit collision, just wait
-            next_target = nil
+            -- Remember that we wanted to explore this direction
+            train.blocked_target = next_target
         end
+        
+        return -- Exit early, don't set new target
     end
     
     train.target_track = next_target
