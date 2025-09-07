@@ -9,6 +9,15 @@ end
 function Pathfinder:findPathToDepot(start_track, depot, tracks)
     if not start_track then return nil end
     
+    -- Debug: Check what we received
+    print("DEBUG: Pathfinder received tracks:", tracks, "type:", type(tracks), "count:", tracks and #tracks or "nil")
+    
+    -- Safety check for tracks parameter
+    if not tracks or type(tracks) ~= "table" then
+        print("ERROR: Pathfinder received invalid tracks parameter")
+        return nil
+    end
+    
     -- If already connected to depot, direct path
     if start_track.connected_to_depot then
         return {start_track}
@@ -21,7 +30,7 @@ function Pathfinder:findPathToDepot(start_track, depot, tracks)
     local f_score = {}
     
     -- Initialize scores
-    for _, track in ipairs(tracks) do
+    for _, track in ipairs(tracks or {}) do
         g_score[track] = math.huge
         f_score[track] = math.huge
     end

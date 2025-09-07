@@ -318,6 +318,7 @@ function Train:findNextTarget(depot, pathfinder, debug_log, occupied_positions)
     else
         -- Returning: use pathfinder to find best route back
         if self.current_track then
+            debug_log:log("DEBUG: Train " .. self.id .. " calling pathfinder with tracks count: " .. (tracks and #tracks or "nil"))
             local path = pathfinder:findPathToDepot(self.current_track, depot, tracks)
             if path and #path > 0 then
                 -- If path only contains current track, it means we can go direct to depot
