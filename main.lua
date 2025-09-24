@@ -5,6 +5,7 @@ local TrackManager = require('systems.track-manager')
 local Pathfinder = require('lib.pathfinder')
 local Depot = require('entities.depot')
 local DebugLog = require('systems.debug-log')
+local WorldConfig = require('config.world-config')
 
 -- Game objects
 local camera
@@ -19,8 +20,7 @@ local occupied_positions = {} -- Format: [x_y] = train_id
 
 -- Game constants
 local SCREEN_WIDTH, SCREEN_HEIGHT
-local WORLD_WIDTH, WORLD_HEIGHT
-local GRID_SIZE = 40
+local GRID_SIZE = WorldConfig.TILE_SIZE
 local TRAIN_SPAWN_INTERVAL = 3 -- seconds
 
 -- Input handling
@@ -38,27 +38,25 @@ function love.load()
     if love.system.getOS() == "Windows" then
         love.window.showMessageBox("Debug", "Console enabled - check for debug output", "info")
     end
-    
+
     -- Game settings
     love.window.setTitle("Train Prototype")
     love.window.setMode(0, 0, {fullscreen = true}) -- True fullscreen
-    love.graphics.setBackgroundColor(0.2, 0.6, 0.2) -- Green background
-    
+    love.graphics.setBackgroundColor(0, 0, 0) -- Black background
+
     -- World and screen dimensions
     SCREEN_WIDTH = love.graphics.getWidth()
     SCREEN_HEIGHT = love.graphics.getHeight()
-    WORLD_WIDTH = SCREEN_WIDTH * 3 -- 3x screen width
-    WORLD_HEIGHT = SCREEN_HEIGHT * 3 -- 3x screen height
-    
+
     -- Initialize game objects
-    camera = Camera:new(SCREEN_WIDTH, SCREEN_HEIGHT, WORLD_WIDTH, WORLD_HEIGHT)
+    camera = Camera:new(SCREEN_WIDTH, SCREEN_HEIGHT)
     track_manager = TrackManager:new(GRID_SIZE)
     pathfinder = Pathfinder
-    depot = Depot:new(0, 0, 80, 60, GRID_SIZE)
+
+    -- Place depot at center of world
+    local depot_x, depot_y = WorldConfig.tileCenterToWorld(WorldConfig.DEPOT_TILE_X, WorldConfig.DEPOT_TILE_Y)
+    depot = Depot:new(depot_x, depot_y, 80, 60, GRID_SIZE)
     debug_log = DebugLog:new(SCREEN_WIDTH, SCREEN_HEIGHT, 20)
-    
-    -- Center camera on depot at startup
-    camera:centerOn(depot.x, depot.y)
 end
 
 -- Position management functions
@@ -134,40 +132,41 @@ function love.update(dt)
 end
 
 function love.draw()
+    -- Clear with black background
+    love.graphics.clear(0, 0, 0)
+
     -- Apply camera transform
     camera:push()
-    
-    -- Draw world grid (optional visual aid)
-    love.graphics.setColor(0.15, 0.5, 0.15, 0.3) -- Faint green grid
-    for x = -WORLD_WIDTH/2, WORLD_WIDTH/2, GRID_SIZE do
-        love.graphics.line(x, -WORLD_HEIGHT/2, x, WORLD_HEIGHT/2)
-    end
-    for y = -WORLD_HEIGHT/2, WORLD_HEIGHT/2, GRID_SIZE do
-        love.graphics.line(-WORLD_WIDTH/2, y, WORLD_WIDTH/2, y)
-    end
-    
+
+    -- Draw world background
+    drawWorldBackground()
+
+    -- Draw world boundaries
+    drawWorldBoundaries()
+
     -- Draw depot connection range (visual aid)
     depot:drawConnectionRange()
-    
+
     -- Draw depot
     depot:draw()
-    
+
     -- Draw tracks
     track_manager:draw(depot)
-    
+
     -- Draw trains
     for _, train in ipairs(trains) do
         train:draw(depot)
     end
-    
+
     -- Reset camera transform
     camera:pop()
     
     -- Draw UI (not affected by camera)
     love.graphics.setColor(1, 1, 1)
     love.graphics.print("CLICK: Place/Remove tracks | SPACE: Spawn train | ESC: Quit | ↑↓: Scroll log", 10, 10)
-    love.graphics.print("Move mouse to pan camera! | Mouse wheel: Zoom", 10, 30)
+    love.graphics.print("Edge pan: Move mouse to screen edges | Mouse wheel: Zoom", 10, 30)
     love.graphics.print("Trains: " .. #trains .. " | Tracks: " .. track_manager:getTrackCount() .. " | Zoom: " .. string.format("%.1f", camera.zoom) .. "x", 10, 50)
+    love.graphics.print("World: " .. WorldConfig.WORLD_TILES_X .. "x" .. WorldConfig.WORLD_TILES_Y .. " tiles", 10, 90)
     
     -- Count occupied positions for debugging
     local occupied_count = 0
@@ -178,6 +177,41 @@ function love.draw()
     
     -- Draw debug log panel in lower right
     debug_log:draw()
+end
+
+function drawWorldBackground()
+    -- Get visible tile bounds
+    local minTileX, minTileY, maxTileX, maxTileY = camera:getVisibleTileBounds()
+
+    -- Clamp to world bounds
+    minTileX = math.max(0, minTileX - 1)
+    minTileY = math.max(0, minTileY - 1)
+    maxTileX = math.min(WorldConfig.WORLD_TILES_X - 1, maxTileX + 1)
+    maxTileY = math.min(WorldConfig.WORLD_TILES_Y - 1, maxTileY + 1)
+
+    -- Draw tile grid
+    love.graphics.setColor(0.15, 0.5, 0.15, 0.3) -- Faint green grid
+    for tx = minTileX, maxTileX do
+        local wx = tx * WorldConfig.TILE_SIZE
+        love.graphics.line(wx, minTileY * WorldConfig.TILE_SIZE, wx, (maxTileY + 1) * WorldConfig.TILE_SIZE)
+    end
+    for ty = minTileY, maxTileY do
+        local wy = ty * WorldConfig.TILE_SIZE
+        love.graphics.line(minTileX * WorldConfig.TILE_SIZE, wy, (maxTileX + 1) * WorldConfig.TILE_SIZE, wy)
+    end
+
+    -- Draw a slightly darker background for the world area
+    love.graphics.setColor(0.1, 0.3, 0.1, 0.5)
+    love.graphics.rectangle("fill", 0, 0, WorldConfig.WORLD_PIXEL_WIDTH, WorldConfig.WORLD_PIXEL_HEIGHT)
+end
+
+function drawWorldBoundaries()
+    -- Draw thick border around world
+    love.graphics.setColor(1, 0, 0, 0.8) -- Red boundary
+    love.graphics.setLineWidth(4)
+    love.graphics.rectangle("line", 0, 0, WorldConfig.WORLD_PIXEL_WIDTH, WorldConfig.WORLD_PIXEL_HEIGHT)
+    love.graphics.setLineWidth(1)
+    love.graphics.setColor(1, 1, 1)
 end
 
 function love.mousepressed(x, y, button)
@@ -224,7 +258,7 @@ end
 function love.wheelmoved(x, y)
     -- y > 0 = wheel up (zoom in), y < 0 = wheel down (zoom out)
     local mouse_x, mouse_y = love.mouse.getPosition()
-    camera:zoom(y, mouse_x, mouse_y)
+    camera:zoomTowards(y, mouse_x, mouse_y)
 end
 
 function spawnTrain()

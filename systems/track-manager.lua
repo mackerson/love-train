@@ -1,5 +1,6 @@
 local Class = require('lib.base-class')
 local Track = require('entities.track')
+local WorldConfig = require('config.world-config')
 
 local TrackManager = Class:extend()
 
@@ -27,9 +28,16 @@ function TrackManager:draw(depot)
 end
 
 function TrackManager:placeTrack(world_x, world_y, depot, last_placed_position)
-    -- Snap to grid (align with depot at 0,0)
-    local grid_x = math.floor((world_x + self.grid_size/2) / self.grid_size) * self.grid_size
-    local grid_y = math.floor((world_y + self.grid_size/2) / self.grid_size) * self.grid_size
+    -- Convert to tile coordinates
+    local tile_x, tile_y = WorldConfig.worldToTile(world_x, world_y)
+
+    -- Validate within world bounds
+    if not WorldConfig.isInTileBounds(tile_x, tile_y) then
+        return false, last_placed_position
+    end
+
+    -- Convert back to world coordinates (centered in tile)
+    local grid_x, grid_y = WorldConfig.tileCenterToWorld(tile_x, tile_y)
     
     -- Don't place tracks too close to depot
     if math.abs(grid_x - depot.x) < depot.width and math.abs(grid_y - depot.y) < depot.height then
