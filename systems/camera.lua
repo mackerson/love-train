@@ -20,6 +20,10 @@ function Camera:set(screen_width, screen_height)
     self.is_dragging = false
     self.edge_pan_active = false
 
+    -- Edge panning velocity for smooth acceleration
+    self.edge_pan_vx = 0
+    self.edge_pan_vy = 0
+
     self.screen_width = screen_width
     self.screen_height = screen_height
     self.world_width = WorldConfig.WORLD_PIXEL_WIDTH
@@ -40,24 +44,35 @@ end
 
 function Camera:updateEdgePanning(dt)
     local mouse_x, mouse_y = love.mouse.getPosition()
-    local pan_dx, pan_dy = 0, 0
+    local target_vx, target_vy = 0, 0
 
+    -- Calculate target velocity based on how close mouse is to edge
     if mouse_x <= WorldConfig.EDGE_PAN_ZONE then
-        pan_dx = -WorldConfig.EDGE_PAN_SPEED * dt
+        local strength = 1 - (mouse_x / WorldConfig.EDGE_PAN_ZONE)
+        target_vx = -WorldConfig.EDGE_PAN_SPEED * strength
     elseif mouse_x >= self.screen_width - WorldConfig.EDGE_PAN_ZONE then
-        pan_dx = WorldConfig.EDGE_PAN_SPEED * dt
+        local strength = 1 - ((self.screen_width - mouse_x) / WorldConfig.EDGE_PAN_ZONE)
+        target_vx = WorldConfig.EDGE_PAN_SPEED * strength
     end
 
     if mouse_y <= WorldConfig.EDGE_PAN_ZONE then
-        pan_dy = -WorldConfig.EDGE_PAN_SPEED * dt
+        local strength = 1 - (mouse_y / WorldConfig.EDGE_PAN_ZONE)
+        target_vy = -WorldConfig.EDGE_PAN_SPEED * strength
     elseif mouse_y >= self.screen_height - WorldConfig.EDGE_PAN_ZONE then
-        pan_dy = WorldConfig.EDGE_PAN_SPEED * dt
+        local strength = 1 - ((self.screen_height - mouse_y) / WorldConfig.EDGE_PAN_ZONE)
+        target_vy = WorldConfig.EDGE_PAN_SPEED * strength
     end
 
-    if pan_dx ~= 0 or pan_dy ~= 0 then
+    -- Smooth acceleration/deceleration for elastic feel
+    local accel = WorldConfig.EDGE_PAN_ACCELERATION
+    self.edge_pan_vx = self.edge_pan_vx + (target_vx - self.edge_pan_vx) * accel * dt
+    self.edge_pan_vy = self.edge_pan_vy + (target_vy - self.edge_pan_vy) * accel * dt
+
+    -- Apply velocity to camera position
+    if math.abs(self.edge_pan_vx) > 1 or math.abs(self.edge_pan_vy) > 1 then
         self.edge_pan_active = true
-        self.target_x = self.target_x + pan_dx / self.zoom
-        self.target_y = self.target_y + pan_dy / self.zoom
+        self.target_x = self.target_x + (self.edge_pan_vx * dt) / self.zoom
+        self.target_y = self.target_y + (self.edge_pan_vy * dt) / self.zoom
     else
         self.edge_pan_active = false
     end

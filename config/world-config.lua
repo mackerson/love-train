@@ -8,7 +8,8 @@ WorldConfig.WORLD_PIXEL_WIDTH = WorldConfig.WORLD_TILES_X * WorldConfig.TILE_SIZ
 WorldConfig.WORLD_PIXEL_HEIGHT = WorldConfig.WORLD_TILES_Y * WorldConfig.TILE_SIZE
 
 WorldConfig.EDGE_PAN_ZONE = 20
-WorldConfig.EDGE_PAN_SPEED = 500
+WorldConfig.EDGE_PAN_SPEED = 1200
+WorldConfig.EDGE_PAN_ACCELERATION = 8
 
 WorldConfig.DEPOT_TILE_X = 50
 WorldConfig.DEPOT_TILE_Y = 50
