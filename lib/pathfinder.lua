@@ -1,12 +1,6 @@
-local Class = require('lib.base-class')
+local Pathfinder = {}
 
-local Pathfinder = Class:extend()
-
-function Pathfinder:set()
-    -- No initialization needed for stateless pathfinding
-end
-
-function Pathfinder:findPathToDepot(start_track, depot, tracks)
+function Pathfinder.findPathToDepot(start_track, depot, tracks)
     if not start_track then return nil end
     
     -- Debug: Check what we received
@@ -36,7 +30,7 @@ function Pathfinder:findPathToDepot(start_track, depot, tracks)
     end
     
     g_score[start_track] = 0
-    f_score[start_track] = self:heuristic(start_track, depot)
+    f_score[start_track] = Pathfinder.heuristic(start_track, depot)
     table.insert(open_set, start_track)
     
     while #open_set > 0 do
@@ -68,10 +62,10 @@ function Pathfinder:findPathToDepot(start_track, depot, tracks)
         
         -- Check all neighbors
         for _, neighbor in ipairs(current.connections) do
-            if not self:isInSet(neighbor, closed_set) then
-                local tentative_g = g_score[current] + self:distance(current, neighbor)
+            if not Pathfinder.isInSet(neighbor, closed_set) then
+                local tentative_g = g_score[current] + Pathfinder.distance(current, neighbor)
                 
-                if not self:isInSet(neighbor, open_set) then
+                if not Pathfinder.isInSet(neighbor, open_set) then
                     table.insert(open_set, neighbor)
                 elseif tentative_g >= g_score[neighbor] then
                     goto continue -- This path is not better
@@ -79,7 +73,7 @@ function Pathfinder:findPathToDepot(start_track, depot, tracks)
                 
                 came_from[neighbor] = current
                 g_score[neighbor] = tentative_g
-                f_score[neighbor] = g_score[neighbor] + self:heuristic(neighbor, depot)
+                f_score[neighbor] = g_score[neighbor] + Pathfinder.heuristic(neighbor, depot)
                 
                 ::continue::
             end
@@ -89,16 +83,16 @@ function Pathfinder:findPathToDepot(start_track, depot, tracks)
     return nil -- No path found
 end
 
-function Pathfinder:heuristic(track, depot)
+function Pathfinder.heuristic(track, depot)
     -- Manhattan distance to depot
     return math.abs(track.x - depot.x) + math.abs(track.y - depot.y)
 end
 
-function Pathfinder:distance(track1, track2)
+function Pathfinder.distance(track1, track2)
     return math.sqrt((track1.x - track2.x)^2 + (track1.y - track2.y)^2)
 end
 
-function Pathfinder:isInSet(item, set)
+function Pathfinder.isInSet(item, set)
     for _, v in ipairs(set) do
         if v == item then
             return true

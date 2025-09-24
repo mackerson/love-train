@@ -11,7 +11,8 @@ function Camera:set(screen_width, screen_height, world_width, world_height)
     self.zoom = 1.0 -- Current zoom level
     self.min_zoom = 0.3
     self.max_zoom = 3.0
-    
+    self.is_dragging = false -- Track if user is actively moving camera
+
     -- Store dimensions for bounds checking
     self.screen_width = screen_width
     self.screen_height = screen_height
@@ -34,6 +35,18 @@ function Camera:update(dt)
     -- Smooth camera movement
     self.x = self.x + (self.target_x - self.x) * self.smooth * dt
     self.y = self.y + (self.target_y - self.y) * self.smooth * dt
+end
+
+function Camera:pan(dx, dy)
+    -- Manual camera panning
+    self.target_x = self.target_x + dx / self.zoom
+    self.target_y = self.target_y + dy / self.zoom
+
+    -- Clamp camera to world bounds
+    self.target_x = math.max(-self.world_width/2 + self.screen_width/(2*self.zoom),
+                            math.min(self.world_width/2 - self.screen_width/(2*self.zoom), self.target_x))
+    self.target_y = math.max(-self.world_height/2 + self.screen_height/(2*self.zoom),
+                            math.min(self.world_height/2 - self.screen_height/(2*self.zoom), self.target_y))
 end
 
 function Camera:centerOn(x, y)

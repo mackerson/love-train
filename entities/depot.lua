@@ -1,5 +1,5 @@
 local Class = require('lib.base-class')
-local Train = require('lib.train')
+local Train = require('entities.train')
 
 local Depot = Class:extend()
 

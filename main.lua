@@ -1,10 +1,10 @@
 -- Love Train - Refactored with Classes
-local Camera = require('lib.camera')
-local Train = require('lib.train')
-local TrackManager = require('lib.track-manager')
+local Camera = require('systems.camera')
+local Train = require('entities.train')
+local TrackManager = require('systems.track-manager')
 local Pathfinder = require('lib.pathfinder')
-local Depot = require('lib.depot')
-local DebugLog = require('lib.debug-log')
+local Depot = require('entities.depot')
+local DebugLog = require('systems.debug-log')
 
 -- Game objects
 local camera
@@ -53,8 +53,8 @@ function love.load()
     -- Initialize game objects
     camera = Camera:new(SCREEN_WIDTH, SCREEN_HEIGHT, WORLD_WIDTH, WORLD_HEIGHT)
     track_manager = TrackManager:new(GRID_SIZE)
-    pathfinder = Pathfinder:new()
-    depot = Depot:new(SCREEN_WIDTH / 2, SCREEN_HEIGHT - 100, 80, 60, GRID_SIZE)
+    pathfinder = Pathfinder
+    depot = Depot:new(0, 0, 80, 60, GRID_SIZE)
     debug_log = DebugLog:new(SCREEN_WIDTH, SCREEN_HEIGHT, 20)
     
     -- Center camera on depot at startup
@@ -98,96 +98,10 @@ function clearTrainFromAllPositions(train_id)
     
     for _, position_key in ipairs(positions_to_clear) do
         occupied_positions[position_key] = nil
-        debugLog("Cleared position " .. position_key .. " previously occupied by train " .. train_id)
+        debug_log:log("Cleared position " .. position_key .. " previously occupied by train " .. train_id)
     end
 end
 
-function getTrackAt(x, y)
-    local key = getPositionKey(x, y)
-    return track_map[key]
-end
-
-function debugLog(message)
-    print(message) -- Console output
-    table.insert(debug_log, message)
-    -- Keep only last max_log_lines
-    if #debug_log > max_log_lines then
-        table.remove(debug_log, 1)
-    end
-    -- Auto-scroll to bottom when new messages arrive
-    log_panel.scroll_offset = math.max(0, #debug_log - log_panel.max_visible_lines)
-end
-
-function drawDebugLogPanel()
-    local panel = log_panel
-    local panel_x = SCREEN_WIDTH - panel.width - panel.margin
-    local panel_y = SCREEN_HEIGHT - panel.height - panel.margin
-    
-    -- Draw panel background
-    love.graphics.setColor(0, 0, 0, 0.8) -- Semi-transparent black
-    love.graphics.rectangle("fill", panel_x, panel_y, panel.width, panel.height)
-    
-    -- Draw panel border
-    love.graphics.setColor(0.3, 0.3, 0.3, 1) -- Gray border
-    love.graphics.setLineWidth(2)
-    love.graphics.rectangle("line", panel_x, panel_y, panel.width, panel.height)
-    love.graphics.setLineWidth(1) -- Reset line width
-    
-    -- Draw title
-    love.graphics.setColor(1, 1, 0.5) -- Light yellow for title
-    love.graphics.print("=== TRAIN LOG ===", panel_x + 10, panel_y + 5)
-    
-    -- Calculate which log lines to show based on scroll offset
-    local start_line = math.max(1, panel.scroll_offset + 1)
-    local end_line = math.min(#debug_log, start_line + panel.max_visible_lines - 1)
-    
-    -- Draw log lines
-    love.graphics.setColor(1, 1, 1) -- White for log text
-    local text_y = panel_y + 25 -- Start below title
-    
-    for i = start_line, end_line do
-        local log_line = debug_log[i]
-        -- Truncate long lines to fit in panel
-        if love.graphics.getFont():getWidth(log_line) > panel.width - 20 then
-            log_line = string.sub(log_line, 1, 50) .. "..."
-        end
-        love.graphics.print(log_line, panel_x + 10, text_y)
-        text_y = text_y + panel.line_height
-    end
-    
-    -- Draw scrollbar if needed
-    if #debug_log > panel.max_visible_lines then
-        drawLogScrollbar(panel_x, panel_y)
-    end
-    
-    -- Draw scroll instructions
-    if #debug_log > panel.max_visible_lines then
-        love.graphics.setColor(0.7, 0.7, 0.7) -- Gray for instructions
-        love.graphics.print("↑↓ to scroll", panel_x + panel.width - 70, panel_y + panel.height - 15)
-    end
-end
-
-function drawLogScrollbar(panel_x, panel_y)
-    local panel = log_panel
-    local scrollbar_x = panel_x + panel.width - 15
-    local scrollbar_y = panel_y + 25
-    local scrollbar_height = panel.height - 45
-    
-    -- Draw scrollbar track
-    love.graphics.setColor(0.2, 0.2, 0.2, 1)
-    love.graphics.rectangle("fill", scrollbar_x, scrollbar_y, 10, scrollbar_height)
-    
-    -- Calculate thumb position and size
-    local total_lines = #debug_log
-    local visible_ratio = panel.max_visible_lines / total_lines
-    local thumb_height = math.max(20, scrollbar_height * visible_ratio)
-    local scroll_ratio = panel.scroll_offset / (total_lines - panel.max_visible_lines)
-    local thumb_y = scrollbar_y + scroll_ratio * (scrollbar_height - thumb_height)
-    
-    -- Draw scrollbar thumb
-    love.graphics.setColor(0.6, 0.6, 0.6, 1)
-    love.graphics.rectangle("fill", scrollbar_x, thumb_y, 10, thumb_height)
-end
 
 function love.update(dt)
     -- Update camera
@@ -317,47 +231,6 @@ function spawnTrain()
     local train = depot:spawnTrain(track_manager:getAllTracks(), occupied_positions, debug_log)
     if train then
         table.insert(trains, train)
-    end
-end
-
--- Position management functions
-function getPositionKey(x, y)
-    return x .. "_" .. y
-end
-
-function isPositionOccupied(x, y)
-    local key = getPositionKey(x, y)
-    return occupied_positions[key] ~= nil
-end
-
-function isPositionOccupiedByOther(x, y, train_id)
-    local key = getPositionKey(x, y)
-    local occupying_train = occupied_positions[key]
-    return occupying_train ~= nil and occupying_train ~= train_id
-end
-
-function occupyPosition(x, y, train_id)
-    local key = getPositionKey(x, y)
-    occupied_positions[key] = train_id
-end
-
-function freePosition(x, y)
-    local key = getPositionKey(x, y)
-    occupied_positions[key] = nil
-end
-
-function clearTrainFromAllPositions(train_id)
-    -- Remove this train from all occupied positions
-    local positions_to_clear = {}
-    for position_key, occupying_train_id in pairs(occupied_positions) do
-        if occupying_train_id == train_id then
-            table.insert(positions_to_clear, position_key)
-        end
-    end
-    
-    for _, position_key in ipairs(positions_to_clear) do
-        occupied_positions[position_key] = nil
-        debug_log:log("Cleared position " .. position_key .. " previously occupied by train " .. train_id)
     end
 end
 
