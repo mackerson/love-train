@@ -115,4 +115,9 @@ function DebugLog:clear()
     self.panel.scroll_offset = 0
 end
 
+function DebugLog:updateScreenSize(screen_width, screen_height)
+    self.screen_width = screen_width
+    self.screen_height = screen_height
+end
+
 return DebugLog

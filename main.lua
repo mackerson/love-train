@@ -44,6 +44,10 @@ function love.load()
     love.window.setMode(0, 0, {fullscreen = true}) -- True fullscreen
     love.graphics.setBackgroundColor(0, 0, 0) -- Black background
 
+    -- Capture mouse to prevent leaving window (important for multi-monitor setups)
+    love.mouse.setGrabbed(true)
+    love.mouse.setRelativeMode(false) -- Keep absolute positioning for edge panning
+
     -- World and screen dimensions
     SCREEN_WIDTH = love.graphics.getWidth()
     SCREEN_HEIGHT = love.graphics.getHeight()
@@ -163,10 +167,10 @@ function love.draw()
     
     -- Draw UI (not affected by camera)
     love.graphics.setColor(1, 1, 1)
-    love.graphics.print("CLICK: Place/Remove tracks | SPACE: Spawn train | ESC: Quit | ↑↓: Scroll log", 10, 10)
-    love.graphics.print("Edge pan: Move mouse to screen edges | Mouse wheel: Zoom", 10, 30)
+    love.graphics.print("CLICK: Place/Remove tracks | SPACE: Spawn train | TAB: Toggle mouse capture | F: Toggle fullscreen", 10, 10)
+    love.graphics.print("Edge pan: Move mouse to screen edges | Mouse wheel: Zoom | ESC: Quit | ↑↓: Scroll log", 10, 30)
     love.graphics.print("Trains: " .. #trains .. " | Tracks: " .. track_manager:getTrackCount() .. " | Zoom: " .. string.format("%.1f", camera.zoom) .. "x", 10, 50)
-    love.graphics.print("World: " .. WorldConfig.WORLD_TILES_X .. "x" .. WorldConfig.WORLD_TILES_Y .. " tiles", 10, 90)
+    love.graphics.print("World: " .. WorldConfig.WORLD_TILES_X .. "x" .. WorldConfig.WORLD_TILES_Y .. " tiles | Mouse: " .. (love.mouse.isGrabbed() and "CAPTURED" or "FREE"), 10, 90)
     
     -- Count occupied positions for debugging
     local occupied_count = 0
@@ -252,6 +256,21 @@ function love.keypressed(key)
         debug_log:scroll(-1)
     elseif key == "down" then
         debug_log:scroll(1)
+    elseif key == "tab" then
+        -- Toggle mouse grab with Tab key
+        local grabbed = love.mouse.isGrabbed()
+        love.mouse.setGrabbed(not grabbed)
+        debug_log:log("Mouse capture: " .. (not grabbed and "ON" or "OFF"))
+    elseif key == "f" then
+        -- Toggle fullscreen with F key
+        local fullscreen = love.window.getFullscreen()
+        love.window.setFullscreen(not fullscreen)
+        -- Update screen dimensions
+        SCREEN_WIDTH = love.graphics.getWidth()
+        SCREEN_HEIGHT = love.graphics.getHeight()
+        camera.screen_width = SCREEN_WIDTH
+        camera.screen_height = SCREEN_HEIGHT
+        debug_log:updateScreenSize(SCREEN_WIDTH, SCREEN_HEIGHT)
     end
 end
 
